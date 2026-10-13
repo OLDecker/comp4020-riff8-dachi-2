@@ -4,7 +4,7 @@
 import type { Bundle, BuildingType, Emote, Family, Pace, StageId } from "./content.ts";
 
 export const PROTOCOL_VERSION = 1;
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const MAX_MESSAGE_BYTES = 2048;
 
 export type Terrain = 0 | 1 | 2 | 3 | 4; // ground, water/ice, void, stellar core, remnant
@@ -130,6 +130,10 @@ export interface RoomState {
   econ: Econ;
   heat: number;
   reserve: number;
+  /** consecutive econ ticks run without a furnace firing, on a local-power stage */
+  sustain: number;
+  /** energy banked in built batteries, spent back out through a renewable shortfall */
+  batteryCharge: number;
   history: StageSummary[];
   archive: ArchiveEntry[];
   players: Record<string, Player>;
@@ -170,7 +174,7 @@ export interface Delta {
   tiles?: [number, Tile][];
   buildings?: Building[];
   removed?: number[];
-  meta?: Pick<RoomState, "inventory" | "ledger" | "econ" | "heat" | "reserve" | "phase" | "hostId"> &
+  meta?: Pick<RoomState, "inventory" | "ledger" | "econ" | "heat" | "reserve" | "sustain" | "batteryCharge" | "phase" | "hostId"> &
     Partial<Pick<RoomState, "archive" | "history">>;
   log?: LogEntry[];
 }

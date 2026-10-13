@@ -44,6 +44,18 @@ export function pruneRooms(): void {
 const select = db.prepare("SELECT schema, state FROM rooms WHERE code = ?");
 const exists = db.prepare("SELECT 1 FROM rooms WHERE code = ?");
 
+// RoomState migrations, run in order against the row's own saved schema
+// number. Each entry upgrades a state one version forward (index i takes
+// schema i+1 to i+2); a row more than one version behind runs through all of
+// them. A schema ahead of what this server knows refuses rather than guess.
+const STATE_MIGRATIONS: ((s: Record<string, unknown>) => void)[] = [
+  // 1 -> 2: renewables' sustain streak and battery bank, both new, start at zero
+  (s) => {
+    s.sustain = 0;
+    s.batteryCharge = 0;
+  },
+];
+
 export function saveRoom(s: RoomState): void {
   upsert.run(s.code, SCHEMA_VERSION, JSON.stringify(s), Date.now(), Object.keys(s.players).length);
 }
@@ -51,8 +63,10 @@ export function saveRoom(s: RoomState): void {
 export function loadRoom(code: string): RoomState | null {
   const row = select.get(code) as { schema: number; state: string } | undefined;
   if (!row) return null;
-  if (row.schema !== SCHEMA_VERSION) throw new Error(`room ${code} is schema ${row.schema}, server expects ${SCHEMA_VERSION}`);
-  return JSON.parse(row.state) as RoomState;
+  if (row.schema > SCHEMA_VERSION) throw new Error(`room ${code} is schema ${row.schema}, server expects ${SCHEMA_VERSION}`);
+  const state = JSON.parse(row.state) as Record<string, unknown>;
+  for (let v = row.schema; v < SCHEMA_VERSION; v++) STATE_MIGRATIONS[v - 1](state);
+  return state as RoomState;
 }
 
 export const roomExists = (code: string): boolean => exists.get(code) !== undefined;

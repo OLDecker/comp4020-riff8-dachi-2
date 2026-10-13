@@ -131,7 +131,7 @@ function flush(r: LiveRoom): void {
   if (ch.buildings.size) d.buildings = s.buildings.filter((b) => ch.buildings.has(b.id));
   if (ch.removed.length) d.removed = ch.removed;
   if (ch.meta) {
-    d.meta = { inventory: s.inventory, ledger: s.ledger, econ: s.econ, heat: s.heat, reserve: s.reserve, phase: s.phase, hostId: s.hostId };
+    d.meta = { inventory: s.inventory, ledger: s.ledger, econ: s.econ, heat: s.heat, reserve: s.reserve, sustain: s.sustain, batteryCharge: s.batteryCharge, phase: s.phase, hostId: s.hostId };
     // the archive and history only ever grow: resend them only when they have
     if (s.archive.length !== r.sentArchive) d.meta.archive = s.archive;
     if (s.history.length !== r.sentHistory) d.meta.history = s.history;

@@ -12,6 +12,8 @@ export const BUILDING_TYPES = [
   "extractor",
   "furnace",
   "solar",
+  "wind",
+  "battery",
   "city",
   "datacentre",
   "habitat",
@@ -20,6 +22,7 @@ export const BUILDING_TYPES = [
   "plaza",
   "depot",
   "engine",
+  "dyson",
 ] as const;
 export type BuildingType = (typeof BUILDING_TYPES)[number];
 
@@ -46,6 +49,14 @@ export interface BuildingDef {
   /** energy released into the reserve when this is rendered down */
   renderValue?: number;
   tall?: boolean;
+  /** this building's output scales with the wind factor, not the solar factor */
+  wind?: boolean;
+  /** banks this much surplus renewable energy, released during a shortfall */
+  batteryCapacity?: number;
+  /** consecutive sustainable econ ticks a room needs before this can be placed */
+  sustainRequired?: number;
+  /** energy banked straight into the reserve per tick this runs, on top of `energy` */
+  dysonYield?: number;
   blurb: string;
 }
 
@@ -81,7 +92,27 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     energy: 2,
     workers: 0,
     compute: 0,
-    blurb: "Clean, slow power that takes a lot of ground.",
+    blurb: "Clean, slow power that takes a lot of ground. Output follows the sun.",
+  },
+  wind: {
+    size: 1,
+    cost: { mineral: 6, matter: 3 },
+    build: 3,
+    energy: 3,
+    workers: 0,
+    compute: 0,
+    wind: true,
+    blurb: "Clean power that follows the wind: fast in a blow, nothing in a calm.",
+  },
+  battery: {
+    size: 1,
+    cost: { mineral: 5, matter: 2 },
+    build: 2,
+    energy: 0,
+    workers: 0,
+    compute: 0,
+    batteryCapacity: 12,
+    blurb: "Banks surplus wind and sun, and spends it back out through the next calm.",
   },
   city: {
     size: 2,
@@ -169,6 +200,18 @@ export const BUILDINGS: Record<BuildingType, BuildingDef> = {
     tall: true,
     blurb: "A whole spent world, running as compute. Render it down for a burst of energy.",
   },
+  dyson: {
+    size: 2,
+    cost: { mineral: 60, matter: 30, coolant: 10 },
+    build: 20,
+    energy: 40,
+    workers: 0,
+    compute: 0,
+    sustainRequired: 300,
+    dysonYield: 200,
+    tall: true,
+    blurb: "A sustainable share of the Sun's whole output, earned by running clean long enough. Lets the Cooperative leave the Sun lit.",
+  },
 };
 
 export type StageId = "earth" | "mars" | "sun" | "system" | "universe";
@@ -223,11 +266,13 @@ export const STAGES: StageDef[] = [
       mineral: { label: "stone", tiles: 16, perTile: 20 },
       coolant: { label: "fresh water", tiles: 14, perTile: 14 },
     },
-    buildings: ["city", "plaza", "furnace", "solar", "datacentre", "extractor"],
+    buildings: ["city", "plaza", "furnace", "solar", "wind", "battery", "datacentre", "extractor"],
     names: {
       city: "Cottages",
       furnace: "Furnace",
       solar: "Sun Garden",
+      wind: "Wind Grove",
+      battery: "Battery Barn",
       datacentre: "Datacentre",
       extractor: "Harvester",
       plaza: "Plaza",
@@ -259,10 +304,12 @@ export const STAGES: StageDef[] = [
       mineral: { label: "iron", tiles: 18, perTile: 20 },
       coolant: { label: "buried ice", tiles: 18, perTile: 16 },
     },
-    buildings: ["habitat", "solar", "city", "datacentre", "extractor", "plaza"],
+    buildings: ["habitat", "solar", "wind", "battery", "city", "datacentre", "extractor", "plaza"],
     names: {
       habitat: "Dome",
       solar: "Solar Field",
+      wind: "Dust Turbine",
+      battery: "Ice Bank",
       city: "Hab Block",
       datacentre: "Cold Datacentre",
       extractor: "Rover Drill",
@@ -295,7 +342,7 @@ export const STAGES: StageDef[] = [
       mineral: { label: "magnetics", tiles: 16, perTile: 18 },
       coolant: { label: "shade", tiles: 14, perTile: 14 },
     },
-    buildings: ["solar", "radiator", "datacentre", "city", "extractor", "plaza"],
+    buildings: ["solar", "radiator", "datacentre", "city", "extractor", "plaza", "dyson"],
     names: {
       solar: "Collector Wing",
       radiator: "Radiator",
@@ -303,6 +350,7 @@ export const STAGES: StageDef[] = [
       city: "Crew Ring",
       extractor: "Plasma Scoop",
       plaza: "Viewing Deck",
+      dyson: "Dyson Sphere",
     },
     starter: { matter: 20, mineral: 50, coolant: 10 },
     landmarks: ["Morning", "The Last Noon"],
@@ -415,6 +463,11 @@ export const MARKS_PER_PLAYER = 3;
 export const SALVAGE_RATE = 0.5;
 /** heat at which collectors throttle to half output (the Sun) */
 export const HEAT_LIMIT = 70;
+
+/** consecutive sustainable econ ticks (no furnace firing) to climb one multiplier level */
+export const SUSTAIN_TICKS_PER_LEVEL = 60;
+/** the sustain multiplier never climbs past this, so renewables stay whole-number and bounded */
+export const SUSTAIN_MAX_MULTIPLIER = 8;
 
 export const EMOTES = ["wave", "heart", "laugh", "wow", "sad", "point"] as const;
 export type Emote = (typeof EMOTES)[number];

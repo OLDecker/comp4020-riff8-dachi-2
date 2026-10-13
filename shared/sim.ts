@@ -18,6 +18,8 @@ import {
   SALVAGE_RATE,
   STAGES,
   SUN_TO_RESERVE,
+  SUSTAIN_MAX_MULTIPLIER,
+  SUSTAIN_TICKS_PER_LEVEL,
   TICK_MS,
   buildingName,
   type Bundle,
@@ -82,6 +84,28 @@ export const averageLife = (s: Pick<RoomState, "tiles" | "ledger">): number => {
   return Math.round(land.reduce((a, t) => a + effectiveLife(t, cap), 0) / Math.max(1, land.length));
 };
 
+/**
+ * Deterministic weather: a pure function of the room's seed, stage and econ
+ * tick count, so it needs no stored state and replays identically after a
+ * crash. Two sine waves at different periods, salted per (seed, stage) so
+ * each world's weather reads as its own, summed into [0, 1]. Real lulls and
+ * real gusts fall out of the overlap, not from randomness.
+ */
+export function weather(seed: number, stageIndex: number, econTicks: number): { wind: number; solar: number } {
+  const salt = Math.abs(seed * 31 + stageIndex * 7919);
+  const wave = (phase: number, p1: number, p2: number): number => {
+    const a = Math.sin(econTicks / p1 + phase);
+    const b = Math.sin(econTicks / p2 + phase * 1.7);
+    return (a * 0.6 + b * 0.4 + 1) / 2;
+  };
+  const wind = wave((salt % 1000) / 1000, 37, 11);
+  const solar = wave(((salt * 7) % 1000) / 1000, 53, 17);
+  return { wind, solar };
+}
+
+/** the integer multiplier a sustained run of clean power earns, bounded so output stays whole-number */
+export const sustainMultiplier = (sustain: number): number => Math.min(SUSTAIN_MAX_MULTIPLIER, 1 + Math.floor(sustain / SUSTAIN_TICKS_PER_LEVEL));
+
 export function createRoom(code: string, seed: number, pace: Pace): RoomState {
   const g = generateStage(seed, 0);
   const s: RoomState = {
@@ -107,6 +131,8 @@ export function createRoom(code: string, seed: number, pace: Pace): RoomState {
     econ: { energySupply: 0, energyUsed: 0, computeSupply: 0, computeUsed: 0, workersSupply: 0, workersUsed: 0 },
     heat: 0,
     reserve: 0,
+    sustain: 0,
+    batteryCharge: 0,
     history: [],
     archive: [],
     players: {},
@@ -251,6 +277,7 @@ export function placementProblem(s: RoomState, type: BuildingType, x: number, y:
     const need = def.cost[f] ?? 0;
     if (s.inventory[f] < need) return `needs ${need} ${st.families[f].label} (have ${s.inventory[f]})`;
   }
+  if (def.sustainRequired && s.sustain < def.sustainRequired) return `needs ${def.sustainRequired - s.sustain} more sustainable ticks: stay off the furnace`;
   return null;
 }
 
@@ -428,7 +455,9 @@ function mutate(s: RoomState, p: Player, c: Exclude<Command, { k: "move" }>, ch:
       return OK;
     }
     case "stop": {
-      if (STAGES[s.stage].id !== "universe") return no("there's always another world, until the last one");
+      const onUniverse = STAGES[s.stage].id === "universe";
+      const onDysonSun = STAGES[s.stage].id === "sun" && hasWorkingDyson(s);
+      if (!onUniverse && !onDysonSun) return no("there's always another world, until the last one");
       if (typeof c.on !== "boolean") return no("malformed vote");
       // a dropped connection never ends the campaign: if a holdout leaves, someone
       // still here confirms by voting again
@@ -437,7 +466,8 @@ function mutate(s: RoomState, p: Player, c: Exclude<Command, { k: "move" }>, ch:
         log(s, ch, c.on ? `${p.name} wants to stop here and leave the rest alone.` : `${p.name} wants to keep going.`);
         ch.meta = true;
       }
-      checkRestraint(s, ch);
+      if (onUniverse) checkRestraint(s, ch);
+      else checkDysonDeparture(s, ch);
       return OK;
     }
     default:
@@ -476,6 +506,38 @@ export function checkRestraint(s: RoomState, ch: Changes): void {
   s.phase = { k: "ended", how: "restraint" };
   for (const p of Object.values(s.players)) p.dx = p.dy = 0;
   log(s, ch, "You stopped. The rest is still out there.");
+  ch.meta = true;
+  ch.boundary = true;
+}
+
+const hasWorkingDyson = (s: RoomState): boolean => s.buildings.some((b) => b.type === "dyson" && complete(b) && b.status === "ok");
+
+/**
+ * The Dyson departure: on the Sun, once a completed Dyson Sphere is running,
+ * everyone present can vote to leave the Sun lit rather than strip it bare.
+ * Unlike the restraint ending this is a transition, not an ending: the
+ * Cooperative moves on exactly as it would on exhaustion, just earlier and
+ * with plasma still in the ledger. nextStage doesn't care why a stage ended,
+ * so the Sun's own leftover-plasma-to-reserve conversion still runs on top.
+ */
+function checkDysonDeparture(s: RoomState, ch: Changes): void {
+  if (s.phase.k !== "play" || STAGES[s.stage].id !== "sun" || !hasWorkingDyson(s)) return;
+  const here = Object.values(s.players).filter((p) => p.connected);
+  if (here.length === 0 || !here.every((p) => p.stop)) return;
+  const st = STAGES[s.stage];
+  for (const t of s.tiles) if (t.mark) s.archive.push({ stage: "sun", name: t.mark.name, fate: "was left shining" });
+  const summary: StageSummary = {
+    stage: st.id,
+    ledger: structuredClone(s.ledger),
+    lifeStart: s.lifeStart,
+    lifeEnd: averageLife(s),
+    buildings: s.buildings.filter((b) => b.owner).length,
+    ticks: s.tick - s.stageStartTick,
+    lost: [...s.archive.filter((a) => a.stage === st.id).map((a) => a.name)],
+  };
+  s.history.push(summary);
+  s.phase = { k: "transition", until: s.tick + PACES[s.pace].transitionTicks, summary };
+  log(s, ch, "The Sun stays lit. What the Sphere already gathered goes with you.");
   ch.meta = true;
   ch.boundary = true;
 }
@@ -533,6 +595,8 @@ function nextStage(s: RoomState, ch: Changes): void {
   s.inventory = { ...st.starter };
   s.ledger = ledgerFor(g.tiles);
   s.heat = 0;
+  s.sustain = 0;
+  s.batteryCharge = 0;
   s.stageStartTick = s.tick;
   s.lifeStart = averageLife(s);
   s.phase = { k: "play" };
